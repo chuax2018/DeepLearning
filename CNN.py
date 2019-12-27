@@ -343,6 +343,21 @@ class DataInitStrategy(Enum):
     Other = 10
 
 
+def initWeights(weights_count, data_init_strategy=DataInitStrategy.GaussianDistribution):
+    weights_vector = []
+    if data_init_strategy == DataInitStrategy.GaussianDistribution:
+        pass
+    if data_init_strategy == DataInitStrategy.RandomDistribution:
+        for i in range(weights_count):
+            weight = random.random()
+            weights_vector.append(weight)
+    elif data_init_strategy == DataInitStrategy.ZeroDistribution:
+        for i in range(weights_count):
+            weight = 0.0
+            weights_vector.append(weight)
+    return weights_vector
+
+
 class FullyConnectedLayerHolder(LayerHolder):
     def __init__(self, node_count):
         width = 1
@@ -350,20 +365,6 @@ class FullyConnectedLayerHolder(LayerHolder):
         channel = 1
         layer_type = LayerType.FullyConnected
         super(LayerHolder, self).__init__(width, height, channel, layer_type)
-
-    def initWeights(self, data_init_strategy = DataInitStrategy.GaussianDistribution):
-        weights_vector = []
-        if data_init_strategy == DataInitStrategy.GaussianDistribution:
-            pass
-        if data_init_strategy == DataInitStrategy.RandomDistribution:
-            for i in range(self.height):
-                weight = random.random()
-                weights_vector.append(weight)
-        elif data_init_strategy == DataInitStrategy.ZeroDistribution:
-            for i in range(self.height):
-                weight = 0.0
-                weights_vector.append(weight)
-        return weights_vector
 
     def flatMap(self, front_layer_holder, NodesVector):
         for each_layer in front_layer_holder.layers:
@@ -376,16 +377,19 @@ class FullyConnectedLayerHolder(LayerHolder):
 
         feature_map_nodes = self.layers[0].nodes
 
-        NodesVector = []
-        self.flatMap(front_layer_holder, NodesVector)
+        nodes_vector = []
+        self.flatMap(front_layer_holder, nodes_vector)
 
-        weights_vector = self.initWeights(DataInitStrategy.RandomDistribution)
+        weights_vector = initWeights(self.height, DataInitStrategy.RandomDistribution)
 
-        if len(feature_map_nodes) != len(NodesVector) or len(feature_map_nodes) != len(weights_vector):
-            print("Error: feature_map_nodes, weights_vector, NodesVector contain not the same count element!")
+        if len(feature_map_nodes) != len(nodes_vector) or len(feature_map_nodes) != len(weights_vector):
+            print("Error: feature_map_nodes, weights_vector, nodes_vector contain not the same count element!")
             return 1
 
         for i in range(len(feature_map_nodes)):
-            feature_map_nodes[i].connect(NodesVector[i], weights_vector[i])
+            feature_map_nodes[i].connect(nodes_vector[i], weights_vector[i])
 
+
+
+if __name__ == "__main__":
 
