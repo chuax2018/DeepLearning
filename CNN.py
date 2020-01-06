@@ -37,6 +37,7 @@ class Kernel(object):
                     weight_random_value = random.random()
                     self.weightStacks[i].addWeight(Weight(weight_random_value))
 
+
 class NodeType(Enum):
     InputNode = 0
     FullyConnected = 1
@@ -50,18 +51,25 @@ class NodeType(Enum):
 
 
 class Node(object):
-    def __init__(self, value=0.0, node_type=NodeType.Convolution):
+    def __init__(self, belong_layer, value=0.0, node_type=NodeType.Convolution):
         self.value = value
         self.type = node_type
+        self.gradient = 0.0
+        self.belong_layer = belong_layer
         self.frontConnections = []
         self.backConnections = []
 
-    def connect(self, node, weight):
+    def connect(self, node, weight_value):
+        weight = Weight(weight_value)
         self.frontConnections.append(Connection(node, weight))
         node.backConnections.append(Connection(self, weight))
 
     def forward(self):
-        if self.type is NodeType.Convolution:
+        # gradient should be reset to zero
+        self.gradient = 0.0
+        if self.type is NodeType.InputNode:
+            return 0
+        elif self.type is NodeType.Convolution:
             sum = 0.0
             for each_connection in self.frontConnections:
                 sum = sum + each_connection.node.value * each_connection.weight
@@ -112,16 +120,23 @@ class Node(object):
         elif self.type is NodeType.FullyConnected:
             sum = 0.0
             for each_connection in self.frontConnections:
-                sum = sum + each_connection.node.value * each_connection.weight
-            self.value = sum
+                sum = sum + each_connection.node.value * each_connection.weight.value
+            self.value = sum + self.belong_layer.bias
         else:
             print("Error: Unsupported NodeType, please fulfill it!")
             return 1
+
+    def backward_update_weights(self, learning_rate):
+        # todo: maybe this is only valid for fully connected node! Please pay attention.
+        for back_connection in self.backConnections:
+            final_gradient = self.value * back_connection.node.gradient
+            back_connection.weight.value = back_connection.weight.value - learning_rate * final_gradient
 
 
 class Connection(object):
     def __init__(self, node, weight):
         self.node = node
+        # weight between two nodes
         self.weight = weight
 
         # forward to get the position and set to True,
@@ -145,6 +160,7 @@ class LayerType(Enum):
     Sigmoid = 4
     Tanh = 5
     FullyConnected = 6
+    InputLayer = 7
     Other = 10
 
 
@@ -160,6 +176,10 @@ class Layer(object):
     def addNode(self, node):
         self.nodes.append(node)
 
+    def backward_update_weights(self, learning_rate):
+        for node in self.nodes:
+            node.backward_update_weights(learning_rate)
+
 
 class LayerHolder(object):
     def __init__(self, width, height, channel, layer_type=LayerType.Convolution):
@@ -168,6 +188,7 @@ class LayerHolder(object):
         self.channel = channel
         self.layers = []
         self.type = layer_type
+        self.initWeights = []
         for c in range(channel):
             self.layers.append(Layer(layer_type))
 
@@ -186,13 +207,18 @@ class LayerHolder(object):
                         node_type = NodeType.Sigmoid
                     elif layer_type is LayerType.FullyConnected:
                         node_type = NodeType.FullyConnected
+                    elif layer_type is LayerType.InputLayer:
+                        node_type = NodeType.InputNode
                     else:
                         print("Error: Unsupported LayerType init! Please fulfill it!")
 
-                    self.layers[i].addNode(Node(node_type))
+                    self.layers[i].addNode(Node(self.layers[i], node_type=node_type))
+
+    def setInitWeights(self, initWeights):
+        self.initWeights = initWeights
 
     # image : cv Mat
-    def fillData(self, image, paddiing_type):
+    def fillImageData(self, image, paddiing_type):
         if image.width > self.width or image.height > self.height or image.channel != self.channel:
             print("image size: %d * %d * %d is imcompatible with this Layer: %d * %d * %d!" %
                   (image.width, image.height, image.channel, self.width, self.height, self.channel))
@@ -212,6 +238,19 @@ class LayerHolder(object):
                         for n in range(self.width):
                             self.layers[i].nodes[self.width * m + n].value = mat[m, n, i]
 
+    def fillVectorData(self, data_vector):
+        if self.channel != 1 or self.width != 1:
+            print("vector as input layer data only support one dimension")
+            return 1
+
+        vec_lenght = len(data_vector)
+        if self.height != vec_lenght:
+            print("this vector size is imcompatible with layer struct")
+            return 1
+
+        for i in range(vec_lenght):
+            self.layers[0].nodes[i].value = data_vector[i]
+
     def forward(self):
         for each_feature_map_layer in self.layers:
             for each_feature_map_node in each_feature_map_layer.nodes:
@@ -219,11 +258,16 @@ class LayerHolder(object):
 
 
 class KernelLayerHolder(LayerHolder):
-    def __init__(self, width, height, channel, stride, kernels, layer_type=LayerType.Convolution):
+    def __init__(self, width, height, channel, stride, kernels, bias_list, layer_type=LayerType.Convolution):
         if channel != len(kernels):
             print("target feature map layers:%d is diff from kernel num: %d!" % (channel, len(kernels)))
             return 1
+        if channel != len(bias_list):
+            print("bias list num:%d is diff with layer num: %d!" % (channel, len(bias_list)))
+            return 1
+
         self.kernels = kernels
+        self.bias_list = bias_list
         self.stride = stride
         super(LayerHolder, self).__init__(width, height, channel, layer_type)
 
@@ -314,26 +358,57 @@ class PoolingLayerHolder(KernelLayerHolder):
         pass
 
 
-class RectifiedLayerHolder(LayerHolder):
-    def __init__(self, front_layer_holder, layer_type=LayerType.ReLU):
-        super(LayerHolder, self).__init__(front_layer_holder.width, front_layer_holder.height, front_layer_holder.channel, layer_type)
-        self.bind(front_layer_holder)
+class RectifiedLayerHolder(object):
+    def __init__(self, layer_type=LayerType.ReLU):
+        self.layer_type = layer_type
+        self.layers = []
+        self.channel = 0
+        self.height = 0
+        self.width = 0
 
     def bind(self, front_layer_holder):
-        # check
-        if len(self.layers) != len(front_layer_holder.layers):
-            print("Error: Holder layer num is not match with front layer holder!")
+        self.channel = channel = front_layer_holder.channel
+        self.height = height = front_layer_holder.height
+        self.width = width = front_layer_holder.width
+
+        layer_type = self.layer_type
+        if layer_type is LayerType.Convolution:
+            node_type = NodeType.Convolution
+        elif layer_type is LayerType.MaxPooling:
+            node_type = NodeType.MaxPooling
+        elif layer_type is LayerType.AvgPooling:
+            node_type = NodeType.AvgPooling
+        elif layer_type is LayerType.ReLU:
+            node_type = NodeType.ReLU
+        elif layer_type is LayerType.Sigmoid:
+            node_type = NodeType.Sigmoid
+        elif layer_type is LayerType.FullyConnected:
+            node_type = NodeType.FullyConnected
+        elif layer_type is LayerType.InputLayer:
+            node_type = NodeType.InputNode
+        else:
+            print("Error: Unsupported LayerType init! Please fulfill it!")
             return 1
-        for i in range(len(front_layer_holder.layers)):
-            if len(self.layers[i]) != len(front_layer_holder.layers[i]):
-                print("Error: Holder layer node num is not match with front layer holder!")
-                return 1
+
+        for c in range(channel):
+            self.layers.append(Layer(layer_type))
+
+        for i in range(channel):
+            for m in range(height):
+                for n in range(width):
+                    self.layers[i].addNode(Node(self.layers[i], node_type=node_type))
+
         # do node bind make the connection
         for i in range(len(front_layer_holder.layers)):
             for j in range(len(front_layer_holder.layers[i].nodes)):
                 src_map_node = front_layer_holder.layers[i].nodes[j]
                 feature_map_node = self.layers[i].nodes[j]
-                feature_map_node.connect(src_map_node, weight=0.0)
+                feature_map_node.connect(src_map_node, weight_value=0.0)
+
+    def forward(self):
+        for each_feature_map_layer in self.layers:
+            for each_feature_map_node in each_feature_map_layer.nodes:
+                each_feature_map_node.forward()
 
 
 class DataInitStrategy(Enum):
@@ -359,12 +434,24 @@ def initWeights(weights_count, data_init_strategy=DataInitStrategy.GaussianDistr
 
 
 class FullyConnectedLayerHolder(LayerHolder):
-    def __init__(self, node_count):
+    def __init__(self, node_count, bias_list=None):
         width = 1
         height = node_count
         channel = 1
         layer_type = LayerType.FullyConnected
-        super(LayerHolder, self).__init__(width, height, channel, layer_type)
+
+        if bias_list is None:
+            bias_list = [0.0]
+
+        if channel != len(bias_list):
+            print("bias list num:%d is diff with layer num: %d!" % (channel, len(bias_list)))
+            return 1
+
+        self.bias_list = bias_list
+        super(FullyConnectedLayerHolder, self).__init__(width, height, channel, layer_type)
+
+        for i in range(channel):
+            self.layers[i].setBias(bias_list[i])
 
     def flatMap(self, front_layer_holder, NodesVector):
         for each_layer in front_layer_holder.layers:
@@ -380,16 +467,194 @@ class FullyConnectedLayerHolder(LayerHolder):
         nodes_vector = []
         self.flatMap(front_layer_holder, nodes_vector)
 
-        weights_vector = initWeights(self.height, DataInitStrategy.RandomDistribution)
+        # weights_vector = initWeights(self.height, DataInitStrategy.RandomDistribution)
+        fully_connection_count = len(nodes_vector) * len(feature_map_nodes)
 
-        if len(feature_map_nodes) != len(nodes_vector) or len(feature_map_nodes) != len(weights_vector):
-            print("Error: feature_map_nodes, weights_vector, nodes_vector contain not the same count element!")
+        if fully_connection_count != len(self.initWeights):
+            print("fully_connection_count is diff with initWeights count")
             return 1
 
         for i in range(len(feature_map_nodes)):
-            feature_map_nodes[i].connect(nodes_vector[i], weights_vector[i])
+            for j in range(len(nodes_vector)):
+                feature_map_nodes[i].connect(nodes_vector[j], self.initWeights[i*len(nodes_vector) + j])
 
+
+class LossType(Enum):
+    MeanSquareLoss = 0
+    Other = 1
+
+
+class Net(object):
+    def __init__(self, net_name, learning_rate=0.01, loss_type=LossType.MeanSquareLoss):
+        self.net_name = net_name
+        self.layer_holder_list = []
+        self.loss_type = loss_type
+        self.learning_rate = learning_rate
+
+    def add_layer_holder(self, layer_holder):
+        self.layer_holder_list.append(layer_holder)
+
+    def init(self):
+        if len(self.layer_holder_list) == 0:
+            print("net:{0} contains no layer holder, please check".format(self.net_name))
+            return 1
+        else:
+            front_layer_holder = None
+            for each_layer_holder in self.layer_holder_list:
+                if front_layer_holder is None:
+                    front_layer_holder = each_layer_holder
+                    continue
+                else:
+                    ret = each_layer_holder.bind(front_layer_holder)
+                    if ret == 1:
+                        print("net init failed!")
+                        return 1
+                    else:
+                        front_layer_holder = each_layer_holder
+
+    def forward(self):
+        for layer_holder in self.layer_holder_list:
+            layer_holder.forward()
+
+    def forward_show_info(self):
+        for layer_holder in self.layer_holder_list:
+            for layer in layer_holder.layers:
+                for node in layer.nodes:
+                    print("node value is: %f" % node.value)
+
+    @staticmethod
+    def calc_mean_square_loss_gradient(predict_y, target_y, nodes_count):
+        gradient1 = predict_y - target_y
+        gradient2 = gradient1 / nodes_count #TODO:DEMO
+        return gradient1
+
+    @staticmethod
+    def calc_sigmoid_gradient(back_node_value, back_node_gradient):
+        return back_node_value * (1 - back_node_value) * back_node_gradient
+
+    def backward_update_gradient(self, target_layer_holder):
+        layer_holder_count = len(self.layer_holder_list)
+        # check output layer holder matches the  target_layer_holder
+        output_layer_holder = self.layer_holder_list[-1]
+        output_layer_holder_layer_count = len(output_layer_holder.layers)
+        target_layer_holder_layer_count = len(target_layer_holder.layers)
+        # we assume layer holder layers are the same dimension
+        if output_layer_holder_layer_count != target_layer_holder_layer_count or \
+            output_layer_holder.width != target_layer_holder.width or \
+            output_layer_holder.height != target_layer_holder.height or \
+            output_layer_holder.channel != target_layer_holder.channel:
+            print("out layer holder and the target layer holder not the same dimension")
+            return 1
+
+        for index in range(layer_holder_count - 1, -1, -1):
+            if index == layer_holder_count - 1:
+                if self.loss_type == LossType.MeanSquareLoss:
+                    for i in range(len(output_layer_holder.layers)):
+                        for j in range(len(output_layer_holder.layers[0].nodes)):
+                            nodes_count = len(output_layer_holder.layers[i].nodes)
+                            node = output_layer_holder.layers[i].nodes[j]
+                            node_value = node.value
+                            target_node_value = target_layer_holder.layers[i].nodes[j].value
+                            node.gradient = self.calc_mean_square_loss_gradient(node_value, target_node_value, nodes_count)
+                else:
+                    print("Unsupported loss function, please update it!")
+                    return 1
+            else:
+                current_layer_holder = self.layer_holder_list[index]
+                back_layer = self.layer_holder_list[index + 1].layers[0]
+                if back_layer.type == LayerType.Sigmoid:
+                    for layer in current_layer_holder.layers:
+                        for node in layer.nodes:
+                            if len(node.backConnections) != 1:
+                                print("Error: node which connect to Sigmoid layer, "
+                                      "connected to more than one Sigmoid node!")
+                                return 1
+                            check_back_node_type = NodeType.Sigmoid
+                            for back_connection in node.backConnections:
+                                if back_connection.node.type != check_back_node_type:
+                                    print("Error: back node is not Sigmoid node")
+                                    return 1
+                            node.gradient = self.calc_sigmoid_gradient(back_connection.node.value, back_connection.node.gradient)
+                elif back_layer.type == LayerType.FullyConnected:
+                    for layer in current_layer_holder.layers:
+                        for node in layer.nodes:
+                            if len(node.backConnections) < 1:
+                                print("Error: non output layer node contains no back node!")
+                                return 1
+
+                            check_back_node_type = NodeType.FullyConnected
+                            for back_connection in node.backConnections:
+                                if back_connection.node.type != check_back_node_type:
+                                    print("Error: node back node is not FullyConnected node!")
+                                    return 1
+
+                            gradient_sum = 0
+                            for back_connection in node.backConnections:
+                                gradient_sum = gradient_sum + back_connection.weight.value * back_connection.node.gradient
+                            node.gradient = gradient_sum
+                else:
+                    print("Error: Unsupported layer type in backward_update_gradient!")
+                    return 1
+        return 0
+
+    def backward_update_weights(self):
+        for layer_holder in self.layer_holder_list:
+            for layer in layer_holder.layers:
+                layer.backward_update_weights(self.learning_rate)
+
+    def backward(self, target_layer_holder):
+        if self.backward_update_gradient(target_layer_holder) is not 0:
+            print("Error:backward_update_gradient failed!")
+            return 1
+
+        self.backward_update_weights()
+        return 0
+
+    def backward_show_info(self):
+        for layer_holder in self.layer_holder_list:
+            for layer in layer_holder.layers:
+                for node in layer.nodes:
+                    print("node value is: %f, gradient: %f " % (node.value, node.gradient))
+                    for back_connection in node.backConnections:
+                        print("node back connection weight: %f" % back_connection.weight.value)
 
 
 if __name__ == "__main__":
+    input_data_vec = [0.05, 0.1]
+    input_layer = LayerHolder(width=1, height=2, channel=1, layer_type=LayerType.InputLayer)
+    input_layer.fillVectorData(input_data_vec)
 
+    fully_connnected_layer_a = FullyConnectedLayerHolder(node_count=2, bias_list=[0.35])
+    init_weights_list_a = [0.15, 0.2, 0.25, 0.3]
+    fully_connnected_layer_a.setInitWeights(init_weights_list_a)
+
+    rectified_layer_sig_a = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+
+    fully_connnected_layer_b = FullyConnectedLayerHolder(node_count=2, bias_list=[0.6])
+    init_weights_list_b = [0.4, 0.45, 0.5, 0.55]
+    fully_connnected_layer_b.setInitWeights(init_weights_list_b)
+
+    rectified_layer_sig_b = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+
+    fully_connnected_net = Net("fullyConnectedNet", learning_rate=0.5)
+    fully_connnected_net.add_layer_holder(input_layer)
+    fully_connnected_net.add_layer_holder(fully_connnected_layer_a)
+    fully_connnected_net.add_layer_holder(rectified_layer_sig_a)
+    fully_connnected_net.add_layer_holder(fully_connnected_layer_b)
+    fully_connnected_net.add_layer_holder(rectified_layer_sig_b)
+
+    fully_connnected_net.init()
+    fully_connnected_net.forward()
+    fully_connnected_net.forward_show_info()
+
+    target_value_list = [0.01, 0.99]
+    target_value_layer_holder = FullyConnectedLayerHolder(node_count=2)
+    target_value_layer_holder.fillVectorData(target_value_list)
+
+    fully_connnected_net.backward(target_value_layer_holder)
+    fully_connnected_net.backward_show_info()
+
+    for i in range(100000):
+        fully_connnected_net.forward()
+        fully_connnected_net.backward(target_value_layer_holder)
+        fully_connnected_net.backward_show_info()
