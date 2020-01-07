@@ -1,9 +1,16 @@
 import os
-import cv2
 import math
+import struct
 import random
 import numpy as np
 from enum import Enum
+
+
+def get_gauss_distributed_list(mu, sigma, num_count):
+    distribution_list = []
+    for i in range(num_count):
+        distribution_list.append(random.gauss(mu, sigma))
+    return distribution_list
 
 
 class PaddingType(Enum):
@@ -47,6 +54,7 @@ class NodeType(Enum):
     Convolution = 5
     MaxPooling = 6
     AvgPooling = 7
+    SoftMax = 8
     Other = 10
 
 
@@ -122,6 +130,12 @@ class Node(object):
             for each_connection in self.frontConnections:
                 sum = sum + each_connection.node.value * each_connection.weight.value
             self.value = sum + self.belong_layer.bias
+        elif self.type is NodeType.SoftMax:
+            if len(self.frontConnections) != 1:
+                print("Error:SoftMax node connect to more than one front node!")
+                return 1
+            softmax_front_connection = self.frontConnections[0]
+            self.value = math.exp(softmax_front_connection.node.value)
         else:
             print("Error: Unsupported NodeType, please fulfill it!")
             return 1
@@ -161,6 +175,7 @@ class LayerType(Enum):
     Tanh = 5
     FullyConnected = 6
     InputLayer = 7
+    SoftMax = 8
     Other = 10
 
 
@@ -209,6 +224,8 @@ class LayerHolder(object):
                         node_type = NodeType.FullyConnected
                     elif layer_type is LayerType.InputLayer:
                         node_type = NodeType.InputNode
+                    elif layer_type is LayerType.SoftMax:
+                        node_type = NodeType.SoftMax
                     else:
                         print("Error: Unsupported LayerType init! Please fulfill it!")
 
@@ -372,8 +389,8 @@ class RectifiedLayerHolder(object):
         self.width = width = front_layer_holder.width
 
         layer_type = self.layer_type
-        if layer_type is LayerType.Convolution:
-            node_type = NodeType.Convolution
+        if layer_type is LayerType.SoftMax:
+            node_type = NodeType.SoftMax
         elif layer_type is LayerType.MaxPooling:
             node_type = NodeType.MaxPooling
         elif layer_type is LayerType.AvgPooling:
@@ -409,6 +426,26 @@ class RectifiedLayerHolder(object):
         for each_feature_map_layer in self.layers:
             for each_feature_map_node in each_feature_map_layer.nodes:
                 each_feature_map_node.forward()
+
+
+class SoftMaxLayerHolder(RectifiedLayerHolder):
+    def __init__(self, layer_type=LayerType.SoftMax):
+        super(SoftMaxLayerHolder, self).__init__(layer_type)
+
+    def forward(self):
+        # update node step1 value
+        for each_feature_map_layer in self.layers:
+            for each_feature_map_node in each_feature_map_layer.nodes:
+                each_feature_map_node.forward()
+        # update layer holder value sum
+        layer_holder_sum = 0.0
+        for each_feature_map_layer in self.layers:
+            for each_feature_map_node in each_feature_map_layer.nodes:
+                layer_holder_sum = layer_holder_sum + each_feature_map_node.value
+        # update node step2 value (final probability distribution)
+        for each_feature_map_layer in self.layers:
+            for each_feature_map_node in each_feature_map_layer.nodes:
+                each_feature_map_node.value = each_feature_map_node.value / layer_holder_sum
 
 
 class DataInitStrategy(Enum):
@@ -481,7 +518,8 @@ class FullyConnectedLayerHolder(LayerHolder):
 
 class LossType(Enum):
     MeanSquareLoss = 0
-    Other = 1
+    CrossEntropyLoss = 1
+    Other = 10
 
 
 class Net(object):
@@ -556,6 +594,17 @@ class Net(object):
                             node_value = node.value
                             target_node_value = target_layer_holder.layers[i].nodes[j].value
                             node.gradient = self.calc_mean_square_loss_gradient(node_value, target_node_value, nodes_count)
+                elif self.loss_type == LossType.CrossEntropyLoss:
+                    if output_layer_holder.layers[0].type != LayerType.SoftMax:
+                        print("Error: CrossEntropyLoss function needs SoftMax layer which does not exist!")
+                        return 1
+                    for i in range(len(output_layer_holder.layers)):
+                        for j in range(len(output_layer_holder.layers[0].nodes)):
+                            node = output_layer_holder.layers[i].nodes[j]
+                            node_value = node.value
+                            target_node_value = target_layer_holder.layers[i].nodes[j].value
+                            # this gradient is fake one, just for front layer propagation
+                            node.gradient = node_value - target_node_value
                 else:
                     print("Unsupported loss function, please update it!")
                     return 1
@@ -575,6 +624,19 @@ class Net(object):
                                     print("Error: back node is not Sigmoid node")
                                     return 1
                             node.gradient = self.calc_sigmoid_gradient(back_connection.node.value, back_connection.node.gradient)
+                elif back_layer.type == LayerType.SoftMax:
+                    for layer in current_layer_holder.layers:
+                        for node in layer.nodes:
+                            if len(node.backConnections) != 1:
+                                print("Error: node which connect to Sigmoid layer, "
+                                      "connected to more than one Sigmoid node!")
+                                return 1
+                            check_back_node_type = NodeType.SoftMax
+                            for back_connection in node.backConnections:
+                                if back_connection.node.type != check_back_node_type:
+                                    print("Error: back node is not SoftMax node")
+                                    return 1
+                            node.gradient = back_connection.node.gradient
                 elif back_layer.type == LayerType.FullyConnected:
                     for layer in current_layer_holder.layers:
                         for node in layer.nodes:
@@ -618,8 +680,7 @@ class Net(object):
                     for back_connection in node.backConnections:
                         print("node back connection weight: %f" % back_connection.weight.value)
 
-
-if __name__ == "__main__":
+def fully_connected_net_demo():
     input_data_vec = [0.05, 0.1]
     input_layer = LayerHolder(width=1, height=2, channel=1, layer_type=LayerType.InputLayer)
     input_layer.fillVectorData(input_data_vec)
@@ -658,3 +719,156 @@ if __name__ == "__main__":
         fully_connnected_net.forward()
         fully_connnected_net.backward(target_value_layer_holder)
         fully_connnected_net.backward_show_info()
+
+
+def parse_image_from_minist_data_set(images_path):
+    ImagesSetHandle = open(images_path, "rb")
+    IntegerBytesNum = 4
+    MagicNum = struct.unpack(">i", ImagesSetHandle.read(IntegerBytesNum))[0]
+    ImagesCount = struct.unpack(">i", ImagesSetHandle.read(IntegerBytesNum))[0]
+    imageRowPixels = struct.unpack(">i", ImagesSetHandle.read(IntegerBytesNum))[0]
+    imageColPixels = struct.unpack(">i", ImagesSetHandle.read(IntegerBytesNum))[0]
+    print("MagicNum: %d ImagesCount: %d imageRowPixels: %d imageColPixels: %d" % (
+    MagicNum, ImagesCount, imageRowPixels, imageColPixels))
+
+    MinistImageBytes = imageRowPixels * imageColPixels
+
+    images = []
+    for i in range(ImagesCount):
+        imageBinaryData = ImagesSetHandle.read(MinistImageBytes)
+        imagePixels = []
+        for j in range(MinistImageBytes):
+            pixelValue = struct.unpack_from(">B", imageBinaryData, j)[0]
+            # if pixelValue > 0:
+            #     pixelValue = 1
+            imagePixels.append(pixelValue)
+        images.append(imagePixels)
+        # print("Images Pixels:\n", imagePixels)
+    return images
+
+
+def parse_label_from_minist_data_set(labels_path):
+    labels_file_handle = open(labels_path, "rb")
+    integer_bytes_num = 4
+    magic_num = struct.unpack(">i", labels_file_handle.read(integer_bytes_num))[0]
+    labels_count = struct.unpack(">i", labels_file_handle.read(integer_bytes_num))[0]
+    print("MagicNum: %d LabelsCount: %d" % (magic_num, labels_count))
+
+    label_bytes_num = 1
+
+    labels = []
+    for i in range(labels_count):
+        label_binary_data = labels_file_handle.read(label_bytes_num)
+        image_labels = []
+        label_value = struct.unpack(">B", label_binary_data)[0]
+        labels.append(label_value)
+    return labels
+
+
+def conv_to_one_hot_obj(value, one_hot_bits_count):
+    one_hot_bits_tmp = [0] * one_hot_bits_count
+    one_hot_bits_tmp[value] = 1
+    return one_hot_bits_tmp
+
+
+def normalize_by_value(image_data_list, value):
+    normalized_data_list = []
+    for data in image_data_list:
+        normalized_data_list.append(data/value)
+    return normalized_data_list
+
+
+if __name__ == "__main__":
+    # fully_connected_net_demo()
+    MinistBinaryDataFolderPath = "../Minist/BinaryData/"
+    MinistTrainImagesPath = os.path.join(MinistBinaryDataFolderPath, "train-images.idx3-ubyte")
+    MinistTrainLabelsPath = os.path.join(MinistBinaryDataFolderPath, "train-labels.idx1-ubyte")
+    MinistTestImagesPath = os.path.join(MinistBinaryDataFolderPath, "t10k-images.idx3-ubyte")
+    MinistTestLabelsPath = os.path.join(MinistBinaryDataFolderPath, "t10k-labels.idx1-ubyte")
+
+    # train_images = parse_image_from_minist_data_set(MinistTrainImagesPath)
+    # print("len:", len(train_images))
+    # print(train_images[0], "\n", train_images[-1])
+    #
+    # train_image_labels = parse_label_from_minist_data_set(MinistTrainLabelsPath)
+    # print("len:", len(train_image_labels))
+    # print(train_image_labels[0], "\n", train_image_labels[-1])
+
+    test_images = parse_image_from_minist_data_set(MinistTestImagesPath)
+    print("len:", len(test_images))
+    print(test_images[0], "\n", test_images[-1])
+
+    test_image_labels = parse_label_from_minist_data_set(MinistTestLabelsPath)
+    print("len:", len(test_image_labels))
+    print(test_image_labels[0], "\n", test_image_labels[-1])
+
+    # for i in range(len(test_images)):
+    #     test_image = np.array(test_images[i]).reshape(28, 28)
+    #     test_image_label = np.array(test_image_labels[i])
+    #     # print(test_image)
+    #     for row in test_image:
+    #         print(row)
+    #     print(test_image_label)
+    #     print("**********************************************")
+
+    # build net
+    input_layer = LayerHolder(width=1, height=28 * 28, channel=1, layer_type=LayerType.InputLayer)
+    fully_connnected_layer_a = FullyConnectedLayerHolder(node_count=16, bias_list=[0.35])
+    rectified_layer_sig_a = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+    fully_connnected_layer_b = FullyConnectedLayerHolder(node_count=16, bias_list=[0.6])
+    rectified_layer_sig_b = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+    fully_connnected_layer_c = FullyConnectedLayerHolder(node_count=10, bias_list=[0.0])
+    soft_max_layer = SoftMaxLayerHolder()
+
+    weights1 = get_gauss_distributed_list(0, 0.5, 28 * 28 * 16)
+    weights2 = get_gauss_distributed_list(0, 0.5, 16 * 16)
+    weights3 = get_gauss_distributed_list(0, 0.8, 16 * 10)
+    fully_connnected_layer_a.setInitWeights(weights1)
+    fully_connnected_layer_b.setInitWeights(weights2)
+    fully_connnected_layer_c.setInitWeights(weights3)
+
+    minist_reco_net = Net("MinistRecoNet", learning_rate=0.01, loss_type=LossType.CrossEntropyLoss)
+    minist_reco_net.add_layer_holder(input_layer)
+    minist_reco_net.add_layer_holder(fully_connnected_layer_a)
+    minist_reco_net.add_layer_holder(rectified_layer_sig_a)
+    minist_reco_net.add_layer_holder(fully_connnected_layer_b)
+    minist_reco_net.add_layer_holder(rectified_layer_sig_b)
+    minist_reco_net.add_layer_holder(fully_connnected_layer_c)
+    minist_reco_net.add_layer_holder(soft_max_layer)
+    minist_reco_net.init()
+
+    # train
+    epochs = 1
+    for epoch in range(epochs):
+        for i in range(len(test_images)):
+            test_image = test_images[i]
+            normalized_test_image = normalize_by_value(test_image, 255)
+            test_image_label = test_image_labels[i]
+            test_image_label_one_hot = conv_to_one_hot_obj(test_image_label, 10)
+            target_value_layer_holder = FullyConnectedLayerHolder(node_count=10)
+            target_value_layer_holder.fillVectorData(test_image_label_one_hot)
+            input_layer.fillVectorData(normalized_test_image)
+            minist_reco_net.forward()
+            minist_reco_net.backward(target_value_layer_holder)
+            # minist_reco_net.backward_show_info()
+            print("train the %d image from epoch: %d" % (i, epoch))
+
+
+    # test
+    for i in range(len(test_images)):
+        test_image = test_images[i]
+        normalized_test_image = normalize_by_value(test_image, 255)
+        test_image_label = test_image_labels[i]
+        test_image_label_one_hot = conv_to_one_hot_obj(test_image_label, 10)
+        input_layer.fillVectorData(normalized_test_image)
+        minist_reco_net.forward()
+
+        predict_res = []
+        for layer in soft_max_layer.layers:
+            for node in layer.nodes:
+                predict_res.append(node.value)
+
+        print("**************************************")
+        print("label:", test_image_label)
+        print("predict:", predict_res)
+        print("**************************************")
