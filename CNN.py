@@ -38,11 +38,12 @@ class Kernel(object):
         self.channel = channel
         self.weightStacks = []
         for i in range(channel):
+            # todo: use more method to init weight value.
+            gauss_distribution = get_gauss_distributed_list(mu=0, sigma=0.5, num_count=width * height)
             for m in range(height):
                 for n in range(width):
-                    # todo: use a func to do init value.
-                    weight_random_value = random.random()
-                    self.weightStacks[i].addWeight(Weight(weight_random_value))
+                    weight_value = gauss_distribution[m * width + n]
+                    self.weightStacks[i].addWeight(Weight(weight_value))
 
 
 class NodeType(Enum):
@@ -102,11 +103,10 @@ class Node(object):
         elif self.type is NodeType.AvgPooling:
             sum = 0
             for each_connection in self.frontConnections:
-                sum = each_connection.node.value
+                sum = sum + each_connection.node.value
 
             for each_connection in self.frontConnections:
                 each_connection.AvgPoolingPartialContribute = each_connection.node.value / sum
-
             self.value = sum / len(self.frontConnections)
         elif self.type is NodeType.ReLU:
             if len(self.frontConnections) != 1:
@@ -135,6 +135,7 @@ class Node(object):
                 print("Error:SoftMax node connect to more than one front node!")
                 return 1
             softmax_front_connection = self.frontConnections[0]
+            # this is tmp value, the final value will be updated in layer holder after get the sum value.
             self.value = math.exp(softmax_front_connection.node.value)
         else:
             print("Error: Unsupported NodeType, please fulfill it!")
@@ -155,7 +156,7 @@ class Connection(object):
 
         # forward to get the position and set to True,
         # backward to use position and then set to False.
-        self.MaxPoolingSelectContribute = False
+        self.MaxPoolingSelected = False
 
         # forward to the value,
         # backward reset the value.
@@ -163,7 +164,7 @@ class Connection(object):
 
         # False record ReluGradient = 1;
         # True record ReluGradient = 0.
-        self.ReluZeroGradient = False
+        self.ReluGradientPositive = False
 
 
 class LayerType(Enum):
@@ -275,18 +276,18 @@ class LayerHolder(object):
 
 
 class KernelLayerHolder(LayerHolder):
-    def __init__(self, width, height, channel, stride, kernels, bias_list, layer_type=LayerType.Convolution):
-        if channel != len(kernels):
-            print("target feature map layers:%d is diff from kernel num: %d!" % (channel, len(kernels)))
+    def __init__(self, width, height, channel, stride, kernel, bias_list, layer_type=LayerType.Convolution):
+        if channel != len(kernel):
+            print("target feature map layer num: %d is diff from kernel  layer num: %d!" % (channel, len(kernel)))
             return 1
         if channel != len(bias_list):
             print("bias list num:%d is diff with layer num: %d!" % (channel, len(bias_list)))
             return 1
 
-        self.kernels = kernels
+        self.kernel = kernel
         self.bias_list = bias_list
         self.stride = stride
-        super(LayerHolder, self).__init__(width, height, channel, layer_type)
+        super(KernelLayerHolder, self).__init__(width, height, channel, layer_type)
 
     def prebind_check(self, front_layer_holder):
         src_map_width = front_layer_holder.width
@@ -295,9 +296,9 @@ class KernelLayerHolder(LayerHolder):
         dst_map_width = self.width
         dst_map_height = self.height
         dst_map_channel = self.channel
-        kernel_width = self.kernels[0].width
-        kernel_height = self.kernels[0].height
-        kernel_channel = self.kernels[0].channel
+        kernel_width = self.kernel.width
+        kernel_height = self.kernel.height
+        kernel_channel = self.kernel.channel
 
         # check kernel channel with src channel
         if src_map_channel != kernel_channel:
@@ -312,18 +313,19 @@ class KernelLayerHolder(LayerHolder):
 
         # check feature map with target map
         if src_kernel_output_width != dst_map_width or src_kernel_output_height != dst_map_height:
-            print("kernel slide on src map get feature map size is imcompatible with dst layer")
+            print("Error: kernel slide on src map get feature map size is imcompatible with dst layer setup size!")
             return 1
         return 0
 
     def setup_node_relationship_by_kernel_sliding(self, front_layer_holder):
         stride = self.stride
-        kernel_width = self.kernels[0].width
-        kernel_height = self.kernels[0].height
+        kernel_width = self.width
+        kernel_height = self.height
         for i in range(self.height):
             for j in range(self.width):
                 feature_map_node_index = i * self.width + j
 
+                #todo: I wrote these, but now I have no idea how it works. It will be reviewed later!
                 src_map_first_row_start_index = stride * j
                 src_map_first_row_end_index = src_map_first_row_start_index + kernel_width - 1
                 src_map_first_col_start_index = stride * i
@@ -352,7 +354,7 @@ class KernelLayerHolder(LayerHolder):
                                 src_map_row_node_index = src_index_start + row_node_position
                                 kernel_row_weight_index = kernel_index_start + row_node_position
                                 src_map_node = front_layer_holder.layers[channel_index].nodes[src_map_row_node_index]
-                                kernel_weight = self.kernels[channel_index].weightStacks[kernel_row_weight_index]
+                                kernel_weight = self.kernel.weightStacks[channel_index].weights[kernel_row_weight_index]
 
                                 feature_map_node.connect(src_map_node, kernel_weight)
         return 0
@@ -365,14 +367,9 @@ class KernelLayerHolder(LayerHolder):
         return self.setup_node_relationship_by_kernel_sliding(front_layer_holder)
 
 
-class ConvolutionLayerHolder(KernelLayerHolder):
-    def __init__(self):
-        pass
-
-
 class PoolingLayerHolder(KernelLayerHolder):
-    def __init__(self):
-        pass
+    def __init__(self, width, height, channel, stride, kernel, layer_type=LayerType.MaxPooling):
+        super(PoolingLayerHolder, self).__init__(width, height, channel, stride, kernel, bias_list=None, layer_type=layer_type)
 
 
 class RectifiedLayerHolder(object):
@@ -654,6 +651,56 @@ class Net(object):
                             for back_connection in node.backConnections:
                                 gradient_sum = gradient_sum + back_connection.weight.value * back_connection.node.gradient
                             node.gradient = gradient_sum
+                elif back_layer.type == LayerType.MaxPooling:
+                    for layer in current_layer_holder.layers:
+                        for node in layer.nodes:
+                            if len(node.backConnections) < 1:
+                                print("Error: non output layer node contains no back node!")
+                                return 1
+
+                            check_back_node_type = NodeType.MaxPooling
+                            for back_connection in node.backConnections:
+                                if back_connection.node.type != check_back_node_type:
+                                    print("Error: node back node is not MaxPooling node!")
+                                    return 1
+                            gradient_sum = 0
+                            for back_connection in node.backConnections:
+                                if back_connection.MaxPoolingSelected is True:
+                                    gradient_sum = gradient_sum + back_connection.node.gradient
+                            node.gradient = gradient_sum
+                elif back_layer.type == LayerType.AvgPooling:
+                    for layer in current_layer_holder.layers:
+                        for node in layer.nodes:
+                            if len(node.backConnections) < 1:
+                                print("Error: non output layer node contains no back node!")
+                                return 1
+
+                            check_back_node_type = NodeType.AvgPooling
+                            for back_connection in node.backConnections:
+                                if back_connection.node.type != check_back_node_type:
+                                    print("Error: node back node is not AvgPooling node!")
+                                    return 1
+                            gradient_sum = 0
+                            for back_connection in node.backConnections:
+                                gradient_sum = gradient_sum + back_connection.AvgPoolingPartialContribute * back_connection.node.gradient
+                            node.gradient = gradient_sum
+                elif back_layer.type == LayerType.ReLU:
+                    for layer in current_layer_holder.layers:
+                        for node in layer.nodes:
+                            if len(node.backConnections) != 1:
+                                print("Error: node which connect to ReLU layer, "
+                                      "connected to more than one node!")
+                                return 1
+                            check_back_node_type = NodeType.ReLU
+                            for back_connection in node.backConnections:
+                                if back_connection.node.type != check_back_node_type:
+                                    print("Error: back node is not Sigmoid node")
+                                    return 1
+                            gradient_sum = 0
+                            for back_connection in node.backConnections:
+                                if back_connection.node.ReluGradientPositive is True:
+                                    gradient_sum = gradient_sum + back_connection.node.gradient
+                            node.gradient = gradient_sum
                 else:
                     print("Error: Unsupported layer type in backward_update_gradient!")
                     return 1
@@ -679,6 +726,7 @@ class Net(object):
                     print("node value is: %f, gradient: %f " % (node.value, node.gradient))
                     for back_connection in node.backConnections:
                         print("node back connection weight: %f" % back_connection.weight.value)
+
 
 def fully_connected_net_demo():
     input_data_vec = [0.05, 0.1]
@@ -778,21 +826,20 @@ def normalize_by_value(image_data_list, value):
     return normalized_data_list
 
 
-if __name__ == "__main__":
-    # fully_connected_net_demo()
+def fully_connect_net_do_minist_hande_writing_reco():
     MinistBinaryDataFolderPath = "../Minist/BinaryData/"
     MinistTrainImagesPath = os.path.join(MinistBinaryDataFolderPath, "train-images.idx3-ubyte")
     MinistTrainLabelsPath = os.path.join(MinistBinaryDataFolderPath, "train-labels.idx1-ubyte")
     MinistTestImagesPath = os.path.join(MinistBinaryDataFolderPath, "t10k-images.idx3-ubyte")
     MinistTestLabelsPath = os.path.join(MinistBinaryDataFolderPath, "t10k-labels.idx1-ubyte")
 
-    # train_images = parse_image_from_minist_data_set(MinistTrainImagesPath)
-    # print("len:", len(train_images))
-    # print(train_images[0], "\n", train_images[-1])
-    #
-    # train_image_labels = parse_label_from_minist_data_set(MinistTrainLabelsPath)
-    # print("len:", len(train_image_labels))
-    # print(train_image_labels[0], "\n", train_image_labels[-1])
+    train_images = parse_image_from_minist_data_set(MinistTrainImagesPath)
+    print("len:", len(train_images))
+    print(train_images[0], "\n", train_images[-1])
+
+    train_image_labels = parse_label_from_minist_data_set(MinistTrainLabelsPath)
+    print("len:", len(train_image_labels))
+    print(train_image_labels[0], "\n", train_image_labels[-1])
 
     test_images = parse_image_from_minist_data_set(MinistTestImagesPath)
     print("len:", len(test_images))
@@ -801,15 +848,6 @@ if __name__ == "__main__":
     test_image_labels = parse_label_from_minist_data_set(MinistTestLabelsPath)
     print("len:", len(test_image_labels))
     print(test_image_labels[0], "\n", test_image_labels[-1])
-
-    # for i in range(len(test_images)):
-    #     test_image = np.array(test_images[i]).reshape(28, 28)
-    #     test_image_label = np.array(test_image_labels[i])
-    #     # print(test_image)
-    #     for row in test_image:
-    #         print(row)
-    #     print(test_image_label)
-    #     print("**********************************************")
 
     # build net
     input_layer = LayerHolder(width=1, height=28 * 28, channel=1, layer_type=LayerType.InputLayer)
@@ -838,16 +876,16 @@ if __name__ == "__main__":
     minist_reco_net.init()
 
     # train
-    epochs = 1
+    epochs = 2
     for epoch in range(epochs):
-        for i in range(len(test_images)):
-            test_image = test_images[i]
-            normalized_test_image = normalize_by_value(test_image, 255)
-            test_image_label = test_image_labels[i]
-            test_image_label_one_hot = conv_to_one_hot_obj(test_image_label, 10)
+        for i in range(len(train_images)):
+            train_image = train_images[i]
+            normalized_image = normalize_by_value(train_image, 255)
+            image_label = train_image_labels[i]
+            image_label_one_hot = conv_to_one_hot_obj(image_label, 10)
             target_value_layer_holder = FullyConnectedLayerHolder(node_count=10)
-            target_value_layer_holder.fillVectorData(test_image_label_one_hot)
-            input_layer.fillVectorData(normalized_test_image)
+            target_value_layer_holder.fillVectorData(image_label_one_hot)
+            input_layer.fillVectorData(normalized_image)
             minist_reco_net.forward()
             minist_reco_net.backward(target_value_layer_holder)
             # minist_reco_net.backward_show_info()
@@ -855,6 +893,9 @@ if __name__ == "__main__":
 
 
     # test
+    right_count = 0
+    wrong_count = 0
+    all_count = len(test_images)
     for i in range(len(test_images)):
         test_image = test_images[i]
         normalized_test_image = normalize_by_value(test_image, 255)
@@ -868,7 +909,89 @@ if __name__ == "__main__":
             for node in layer.nodes:
                 predict_res.append(node.value)
 
-        print("**************************************")
-        print("label:", test_image_label)
-        print("predict:", predict_res)
-        print("**************************************")
+        predict_index = predict_res.index(max(predict_res))
+        label_index = test_image_label_one_hot.index(max(test_image_label_one_hot))
+
+        if predict_index == label_index:
+            right_count = right_count + 1
+        else:
+            wrong_count = wrong_count + 1
+
+    if all_count != right_count + wrong_count:
+        print("Error: test count is abnormal!")
+        print("all_count: %d, right_count: %d wrong_count: %d" % (all_count, right_count, wrong_count))
+    else:
+        ratio = right_count / all_count
+        print("Final Ratio is: %.2f%%" % (ratio * 100))
+
+
+def convolutional_net_do_minist_hande_writing_reco():
+    MinistBinaryDataFolderPath = "../Minist/BinaryData/"
+    MinistTrainImagesPath = os.path.join(MinistBinaryDataFolderPath, "train-images.idx3-ubyte")
+    MinistTrainLabelsPath = os.path.join(MinistBinaryDataFolderPath, "train-labels.idx1-ubyte")
+    MinistTestImagesPath = os.path.join(MinistBinaryDataFolderPath, "t10k-images.idx3-ubyte")
+    MinistTestLabelsPath = os.path.join(MinistBinaryDataFolderPath, "t10k-labels.idx1-ubyte")
+
+    train_images = parse_image_from_minist_data_set(MinistTrainImagesPath)
+    print("len:", len(train_images))
+    print(train_images[0], "\n", train_images[-1])
+
+    train_image_labels = parse_label_from_minist_data_set(MinistTrainLabelsPath)
+    print("len:", len(train_image_labels))
+    print(train_image_labels[0], "\n", train_image_labels[-1])
+
+    test_images = parse_image_from_minist_data_set(MinistTestImagesPath)
+    print("len:", len(test_images))
+    print(test_images[0], "\n", test_images[-1])
+
+    test_image_labels = parse_label_from_minist_data_set(MinistTestLabelsPath)
+    print("len:", len(test_image_labels))
+    print(test_image_labels[0], "\n", test_image_labels[-1])
+
+    input_layer = LayerHolder(width=28, height=28, channel=1, layer_type=LayerType.InputLayer)
+
+    conv_kernel_a = Kernel(width=3, height=3, channel=1)
+    conv_layer_holder_a = KernelLayerHolder(width=28, height=28, channel=1, stride=1, kernel=conv_kernel_a, bias_list=[0.35])
+    maxpooling_kernel_a = Kernel(width=2, height=2, channel=1)
+    maxpooling_layer_holder_a = PoolingLayerHolder(width=14, height=14, channel=1, stride=2, kernel=maxpooling_kernel_a)
+    rectified_layer_holder_sig_a = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+
+    conv_kernel_b = Kernel(width=3, height=3, channel=1)
+    conv_layer_holder_b = KernelLayerHolder(width=14, height=14, channel=1, stride=1, kernel=conv_kernel_b, bias_list=[0.35])
+    maxpooling_kernel_b = Kernel(width=2, height=2, channel=1)
+    maxpooling_layer_holder_b = PoolingLayerHolder(width=7, height=7, channel=1, stride=2, kernel=maxpooling_kernel_b)
+    rectified_layer_holder_sig_b = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+
+    fully_connnected_layer_c = FullyConnectedLayerHolder(node_count=16, bias_list=[0.35])
+    rectified_layer_holder_sig_c = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+    fully_connnected_layer_d = FullyConnectedLayerHolder(node_count=10, bias_list=[0.6])
+    rectified_layer_holder_sig_d = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+    soft_max_layer = SoftMaxLayerHolder()
+
+    weights1 = get_gauss_distributed_list(0, 0.5, 7 * 7 * 16)
+    weights2 = get_gauss_distributed_list(0, 0.8, 16 * 10)
+    fully_connnected_layer_c.setInitWeights(weights1)
+    fully_connnected_layer_d.setInitWeights(weights2)
+
+    minist_reco_net = Net("MinistRecoConvNet", learning_rate=0.01, loss_type=LossType.CrossEntropyLoss)
+    minist_reco_net.add_layer_holder(input_layer)
+    minist_reco_net.add_layer_holder(conv_layer_holder_a)
+    minist_reco_net.add_layer_holder(maxpooling_layer_holder_a)
+    minist_reco_net.add_layer_holder(rectified_layer_holder_sig_a)
+    minist_reco_net.add_layer_holder(conv_layer_holder_b)
+    minist_reco_net.add_layer_holder(maxpooling_layer_holder_b)
+    minist_reco_net.add_layer_holder(rectified_layer_holder_sig_b)
+    minist_reco_net.add_layer_holder(fully_connnected_layer_c)
+    minist_reco_net.add_layer_holder(rectified_layer_holder_sig_c)
+    minist_reco_net.add_layer_holder(fully_connnected_layer_d)
+    minist_reco_net.add_layer_holder(rectified_layer_holder_sig_d)
+    minist_reco_net.add_layer_holder(soft_max_layer)
+    minist_reco_net.init()
+
+
+
+
+if __name__ == "__main__":
+    # fully_connected_net_demo()
+    # fully_connect_net_do_minist_hande_writing_reco()
+    convolutional_net_do_minist_hande_writing_reco()
