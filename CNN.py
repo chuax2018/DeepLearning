@@ -230,8 +230,8 @@ class Connection(object):
         # backward to use position and then set to False.
         self.MaxPoolingSelected = False
 
-        # forward to the value,
-        # backward reset the value.
+        # forward to set the value,
+        # backward then reset the value.
         self.AvgPoolingPartialContribute = 0.0
 
         # False record ReluGradient = 1;
@@ -242,6 +242,7 @@ class Connection(object):
         self.MaxPoolingSelected = False
         self.AvgPoolingPartialContribute = 0.0
         self.ReluGradientPositive = False
+
 
 class LayerType(MyEnum):
     Convolution = 0
@@ -1067,9 +1068,9 @@ def fully_connect_net_do_minist_hande_writing_reco():
     fully_connnected_layer_c = FullyConnectedLayerHolder(node_count=10, bias_list=[0.0])
     soft_max_layer = SoftMaxLayerHolder()
 
-    weights1 = get_gauss_distributed_list(0, 0.5, 28 * 28 * 16)
-    weights2 = get_gauss_distributed_list(0, 0.5, 16 * 16)
-    weights3 = get_gauss_distributed_list(0, 0.8, 16 * 10)
+    weights1 = get_gauss_distributed_list2(0, 0.5, 28 * 28 * 16)
+    weights2 = get_gauss_distributed_list2(0, 0.5, 16 * 16)
+    weights3 = get_gauss_distributed_list2(0, 0.8, 16 * 10)
     fully_connnected_layer_a.setInitWeights(weights1)
     fully_connnected_layer_b.setInitWeights(weights2)
     fully_connnected_layer_c.setInitWeights(weights3)
@@ -1083,6 +1084,9 @@ def fully_connect_net_do_minist_hande_writing_reco():
     minist_reco_net.add_layer_holder(fully_connnected_layer_c)
     minist_reco_net.add_layer_holder(soft_max_layer)
     minist_reco_net.init()
+
+    # train_images = test_images
+    # train_image_labels = test_image_labels
 
     # train
     epochs = 2
@@ -1120,6 +1124,13 @@ def fully_connect_net_do_minist_hande_writing_reco():
 
         predict_index = predict_res.index(max(predict_res))
         label_index = test_image_label_one_hot.index(max(test_image_label_one_hot))
+
+        print("***************************************")
+        print("Test: predict number: %d " % predict_index)
+        print("Test: actual label number: %d " % label_index)
+        print("***************************************")
+
+        time.sleep(2)
 
         if predict_index == label_index:
             right_count = right_count + 1
@@ -1400,6 +1411,156 @@ def small_for_debug_convolutional_net_do_minist_hande_writing_reco():
         print("Final Ratio is: %.2f%%" % (ratio * 100))
 
 
+def debug_fully_connect_net_do_minist_hande_writing_reco():
+    MinistBinaryDataFolderPath = "../Minist/BinaryData/"
+    MinistTrainImagesPath = os.path.join(MinistBinaryDataFolderPath, "train-images.idx3-ubyte")
+    MinistTrainLabelsPath = os.path.join(MinistBinaryDataFolderPath, "train-labels.idx1-ubyte")
+    MinistTestImagesPath = os.path.join(MinistBinaryDataFolderPath, "t10k-images.idx3-ubyte")
+    MinistTestLabelsPath = os.path.join(MinistBinaryDataFolderPath, "t10k-labels.idx1-ubyte")
+
+    # train_images = parse_image_from_minist_data_set(MinistTrainImagesPath)
+    # print("len:", len(train_images))
+    # print(train_images[0], "\n", train_images[-1])
+    #
+    # train_image_labels = parse_label_from_minist_data_set(MinistTrainLabelsPath)
+    # print("len:", len(train_image_labels))
+    # print(train_image_labels[0], "\n", train_image_labels[-1])
+
+    test_images = parse_image_from_minist_data_set(MinistTestImagesPath)
+    print("len:", len(test_images))
+    print(test_images[0], "\n", test_images[-1])
+
+    test_image_labels = parse_label_from_minist_data_set(MinistTestLabelsPath)
+    print("len:", len(test_image_labels))
+    print(test_image_labels[0], "\n", test_image_labels[-1])
+
+    # build net
+    input_layer = LayerHolder(width=28, height=28, channel=1, layer_type=LayerType.InputLayer)
+
+    conv_kernel_a = Kernel(width=3, height=3, channel=1)
+    conv_layer_holder_a = ConvolutionLayerHolder(width=26, height=26, channel=1, stride=1, kernel=conv_kernel_a, bias_list=[0])
+
+    rectified_layer_holder_sig_a = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+
+    maxpooling_kernel_a = Kernel(width=2, height=2, channel=1)
+    maxpooling_layer_holder_a = PoolingLayerHolder(width=13, height=13, channel=1, stride=2, kernel=maxpooling_kernel_a)
+
+    # conv_kernel_b = Kernel(width=2, height=2, channel=1)
+    # conv_layer_holder_b = ConvolutionLayerHolder(width=12, height=12, channel=1, stride=1, kernel=conv_kernel_b, bias_list=[0])
+    # conv layer
+    # rectified_layer_holder_sig_b = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+
+    fully_connnected_layer_a = FullyConnectedLayerHolder(node_count=16, bias_list=[0.35])
+    rectified_layer_sig_a = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+    fully_connnected_layer_b = FullyConnectedLayerHolder(node_count=16, bias_list=[0.6])
+    rectified_layer_sig_b = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+    fully_connnected_layer_c = FullyConnectedLayerHolder(node_count=10, bias_list=[0.0])
+    soft_max_layer = SoftMaxLayerHolder()
+
+    weights1 = get_gauss_distributed_list2(0, 0.5, 13 * 13 * 16)
+    weights2 = get_gauss_distributed_list2(0, 0.5, 16 * 16)
+    weights3 = get_gauss_distributed_list2(0, 0.8, 16 * 10)
+    fully_connnected_layer_a.setInitWeights(weights1)
+    fully_connnected_layer_b.setInitWeights(weights2)
+    fully_connnected_layer_c.setInitWeights(weights3)
+
+    minist_reco_net = Net("MinistRecoNet", learning_rate=0.01, loss_type=LossType.CrossEntropyLoss)
+    minist_reco_net.add_layer_holder(input_layer)
+    minist_reco_net.add_layer_holder(conv_layer_holder_a)
+    minist_reco_net.add_layer_holder(rectified_layer_holder_sig_a)
+    minist_reco_net.add_layer_holder(maxpooling_layer_holder_a)
+    # minist_reco_net.add_layer_holder(conv_layer_holder_b)
+    # minist_reco_net.add_layer_holder(rectified_layer_holder_sig_b)
+    minist_reco_net.add_layer_holder(fully_connnected_layer_a)
+    minist_reco_net.add_layer_holder(rectified_layer_sig_a)
+    minist_reco_net.add_layer_holder(fully_connnected_layer_b)
+    minist_reco_net.add_layer_holder(rectified_layer_sig_b)
+    minist_reco_net.add_layer_holder(fully_connnected_layer_c)
+    minist_reco_net.add_layer_holder(soft_max_layer)
+    minist_reco_net.init()
+
+    train_images = test_images
+    train_image_labels = test_image_labels
+
+    # train
+    epochs = 1
+    train_count = 10000 # not more 10000 fot test set
+    for epoch in range(epochs):
+        for i in range(len(train_images)):
+            train_image = train_images[i]
+            normalized_image = normalize_by_value(train_image, 255)
+            image_label = train_image_labels[i]
+            image_label_one_hot = conv_to_one_hot_obj(image_label, 10)
+            target_value_layer_holder = FullyConnectedLayerHolder(node_count=10)
+            target_value_layer_holder.fillVectorData(image_label_one_hot)
+            input_layer.fillVectorData(normalized_image)
+            minist_reco_net.forward()
+            minist_reco_net.backward(target_value_layer_holder)
+            # minist_reco_net.backward_show_info()
+            print("train the %d image from epoch: %d" % (i, epoch))
+
+            if i == int(train_count/10):
+                print("1/10")
+
+            if i == int((train_count/10)*3):
+                print("3/10")
+
+            if i == int((train_count/10)*5):
+                print("5/10")
+
+            if i == int((train_count/10)*8):
+                print("8/10")
+
+            if i >= train_count - 1:
+                break
+
+    # test
+    right_count = 0
+    wrong_count = 0
+    test_count = 10000 # not more than 10000 test set
+    #all_count = test_count #len(test_images)
+    for i in range(len(test_images)):
+        if i >= test_count - 1:
+            break
+
+        test_image = test_images[i]
+        normalized_test_image = normalize_by_value(test_image, 255)
+        test_image_label = test_image_labels[i]
+        test_image_label_one_hot = conv_to_one_hot_obj(test_image_label, 10)
+        input_layer.fillVectorData(normalized_test_image)
+        minist_reco_net.forward()
+
+        predict_res = []
+        for layer in soft_max_layer.layers:
+            for node in layer.nodes:
+                predict_res.append(node.value)
+
+        predict_index = predict_res.index(max(predict_res))
+        label_index = test_image_label_one_hot.index(max(test_image_label_one_hot))
+
+        # print("***************************************")
+        # print("Test: predict number: %d " % predict_index)
+        # print("Test: actual label number: %d " % label_index)
+        # print("***************************************")
+        #
+        # time.sleep(2)
+
+        if predict_index == label_index:
+            right_count = right_count + 1
+        else:
+            wrong_count = wrong_count + 1
+
+    all_count = right_count + wrong_count
+    ratio = right_count / all_count
+    print("Final Ratio is: %.2f%%" % (ratio * 100))
+    # if all_count != right_count + wrong_count:
+    #     print("Error: test count is abnormal!")
+    #     print("all_count: %d, right_count: %d wrong_count: %d" % (all_count, right_count, wrong_count))
+    # else:
+    #     ratio = right_count / all_count
+    #     print("Final Ratio is: %.2f%%" % (ratio * 100))
+
+
 def check_none_zero_list(value_list):
     for value in value_list:
         if value != 0:
@@ -1445,6 +1606,6 @@ def show_layer_holder_info(target_layer_holder):
 
 if __name__ == "__main__":
     # fully_connected_net_demo()
-    # fully_connect_net_do_minist_hande_writing_reco()
+    debug_fully_connect_net_do_minist_hande_writing_reco()
     # convolutional_net_do_minist_hande_writing_reco()
-    small_for_debug_convolutional_net_do_minist_hande_writing_reco()
+    #small_for_debug_convolutional_net_do_minist_hande_writing_reco()
