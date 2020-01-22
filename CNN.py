@@ -16,10 +16,24 @@ def get_gauss_distributed_list(mu, sigma, num_count):
     return distribution_list
 
 
+def get_gauss_distributed_list_const(const_value, num_count):
+    distribution_list = []
+    for i in range(num_count):
+        distribution_list.append(const_value)
+    return distribution_list
+
+
 def get_gauss_distributed_list2(mu, sigma, num_count):
     distribution_list = []
     for i in range(num_count):
         distribution_list.append(Weight(random.gauss(mu, sigma)))
+    return distribution_list
+
+
+def get_gauss_distributed_list3(const_value, num_count):
+    distribution_list = []
+    for i in range(num_count):
+        distribution_list.append(Weight(const_value))
     return distribution_list
 
 
@@ -67,6 +81,8 @@ class Kernel(object):
             self.weightStacks.append(WeightStack())
             # todo: use more method to init weight value.
             gauss_distribution = get_gauss_distributed_list(mu=0, sigma=0.5, num_count=width * height)
+            # const_distribution = get_gauss_distributed_list_const(const_value=0.007, num_count=width * height)
+            # gauss_distribution = const_distribution
             for m in range(height):
                 for n in range(width):
                     weight_value = gauss_distribution[m * width + n]
@@ -181,12 +197,12 @@ class Node(object):
                 print("Error:ReLU node connect to more than one front node!")
                 return 1
             relu_front_connection = self.frontConnections[0]
-            if relu_front_connection.value > 0:
-                self.value = relu_front_connection.value
-                relu_front_connection.ReluZeroGradient = False
+            if relu_front_connection.node.value > 0:
+                self.value = relu_front_connection.node.value
+                relu_front_connection.ReluGradientPositive = False
             else:
                 self.value = 0.0
-                relu_front_connection.ReluZeroGradient = True
+                relu_front_connection.ReluGradientPositive = True
             return 0
         elif self.type == NodeType.Sigmoid:
             if len(self.frontConnections) != 1:
@@ -371,21 +387,34 @@ class PaddingType(MyEnum):
 
 
 class KernelLayerHolder(LayerHolder):
-    def __init__(self, width, height, channel, stride, kernel, bias_list, layer_type=LayerType.Convolution):
-        if channel != len(kernel.weightStacks):
-            print("target feature map layer num: %d is diff from kernel weights layer num: %d!" % (channel, len(kernel)))
+    def __init__(self, width, height, channel, stride, kernel_list, bias_list, layer_type=LayerType.Convolution):
+        if type(kernel_list) is not list:
+            print("Error:kernel_list type should be list!")
             return 1
 
-        if bias_list is not None:
-            if channel != len(bias_list) and layer_type == LayerType.Convolution:
-                print("bias list num:%d is diff with layer num: %d!" % (channel, len(bias_list)))
+        kernel = kernel_list[0]
+
+        # todo: more layer or split into more class
+        if layer_type == LayerType.Convolution:
+            if channel != len(kernel_list):
+                print("target feature map layer num: %d is diff from kernels num: %d!" % (channel, len(kernel_list)))
                 return 1
+
+        if bias_list is not None:
+            if type(bias_list) is not list:
+                print("Error:bias_list type should be list!")
+                return 1
+
+            #todo: no check this
+            # if channel != len(bias_list) and layer_type == LayerType.Convolution:
+            #     print("bias list num:%d is diff with layer num: %d!" % (channel, len(bias_list)))
+            #     return 1
         else:
             if layer_type == LayerType.Convolution:
                 print("Error:Convolution layer holder bias_list should not be None!")
                 return 1
 
-        self.kernel = kernel
+        self.kernel_list = kernel_list
         self.bias_list = bias_list
         self.stride = stride
 
@@ -401,9 +430,11 @@ class KernelLayerHolder(LayerHolder):
         dst_map_width = self.width
         dst_map_height = self.height
         dst_map_channel = self.channel
-        kernel_width = self.kernel.width
-        kernel_height = self.kernel.height
-        kernel_channel = self.kernel.channel
+
+        kernel = self.kernel_list[0]
+        kernel_width = kernel.width
+        kernel_height = kernel.height
+        kernel_channel = kernel.channel
 
         # check kernel channel with src channel
         if src_map_channel != kernel_channel:
@@ -497,9 +528,11 @@ class KernelLayerHolder(LayerHolder):
         return 0
 
     def setup_node_relationship_by_kernel_sliding(self, front_layer_holder):
+        input_map_channel = front_layer_holder.channel
+
         stride = self.stride
-        kernel_width = self.kernel.width
-        kernel_height = self.kernel.height
+        kernel_width = self.kernel_list[0].width
+        kernel_height = self.kernel_list[0].height
         for i in range(self.height):
             for j in range(self.width):
                 feature_map_node_index = i * self.width + j
@@ -526,16 +559,30 @@ class KernelLayerHolder(LayerHolder):
                         kernel_index_start = index * kernel_width
                         kernel_index_end = kernel_index_start + kernel_width - 1
 
+                        #todo: kernel will be in a list, each kernel calc one feature map.
                         for channel_index in range(self.channel):
                             feature_map_node = self.layers[channel_index].nodes[feature_map_node_index]
                             each_row_nodes_num = src_index_end - src_index_start + 1
                             for row_node_position in range(each_row_nodes_num):
                                 src_map_row_node_index = src_index_start + row_node_position
                                 kernel_row_weight_index = kernel_index_start + row_node_position
-                                src_map_node = front_layer_holder.after_padding_layers[channel_index].nodes[src_map_row_node_index]
-                                kernel_weight = self.kernel.weightStacks[channel_index].weights[kernel_row_weight_index]
 
-                                feature_map_node.connect(src_map_node, kernel_weight)
+                                if self.type == LayerType.Convolution:
+                                    for source_channel_index in range(input_map_channel):
+                                        src_map_node = front_layer_holder.after_padding_layers[source_channel_index].nodes[src_map_row_node_index]
+                                        kernel_weight = self.kernel_list[channel_index].weightStacks[source_channel_index].weights[kernel_row_weight_index]
+
+                                        feature_map_node.connect(src_map_node, kernel_weight)
+                                elif self.type == LayerType.MaxPooling:
+                                    src_map_node = front_layer_holder.after_padding_layers[channel_index].nodes[
+                                        src_map_row_node_index]
+                                    kernel_weight = self.kernel_list[0].weightStacks[channel_index].weights[
+                                        kernel_row_weight_index]
+
+                                    feature_map_node.connect(src_map_node, kernel_weight)
+                                else:
+                                    print("Error: Unsuppoted LayerType in sliding relationship")
+                                    return 1
         return 0
 
     def bind(self, front_layer_holder):
@@ -547,16 +594,16 @@ class KernelLayerHolder(LayerHolder):
 
 
 class ConvolutionLayerHolder(KernelLayerHolder):
-    def __init__(self, width, height, channel, stride, kernel, bias_list=None, layer_type=LayerType.Convolution):
+    def __init__(self, width, height, channel, stride, kernel_list, bias_list=None, layer_type=LayerType.Convolution):
         if bias_list is None:
             for c in channel:
                 bias_list.append(0.0)
-        super(ConvolutionLayerHolder, self).__init__(width, height, channel, stride, kernel, bias_list, layer_type)
+        super(ConvolutionLayerHolder, self).__init__(width, height, channel, stride, kernel_list, bias_list, layer_type)
 
 
 class PoolingLayerHolder(KernelLayerHolder):
-    def __init__(self, width, height, channel, stride, kernel, layer_type=LayerType.MaxPooling):
-        super(PoolingLayerHolder, self).__init__(width, height, channel, stride, kernel, bias_list=None, layer_type=layer_type)
+    def __init__(self, width, height, channel, stride, kernel_list, layer_type=LayerType.MaxPooling):
+        super(PoolingLayerHolder, self).__init__(width, height, channel, stride, kernel_list, bias_list=None, layer_type=layer_type)
 
 
 class RectifiedLayerHolder(object):
@@ -908,7 +955,7 @@ class Net(object):
                                     return 1
                             gradient_sum = 0
                             for back_connection in node.backConnections:
-                                if back_connection.node.ReluGradientPositive is True:
+                                if back_connection.ReluGradientPositive is True:
                                     gradient_sum = gradient_sum + back_connection.node.gradient
                             node.gradient = gradient_sum
                 else:
@@ -1418,13 +1465,13 @@ def debug_fully_connect_net_do_minist_hande_writing_reco():
     MinistTestImagesPath = os.path.join(MinistBinaryDataFolderPath, "t10k-images.idx3-ubyte")
     MinistTestLabelsPath = os.path.join(MinistBinaryDataFolderPath, "t10k-labels.idx1-ubyte")
 
-    # train_images = parse_image_from_minist_data_set(MinistTrainImagesPath)
-    # print("len:", len(train_images))
-    # print(train_images[0], "\n", train_images[-1])
-    #
-    # train_image_labels = parse_label_from_minist_data_set(MinistTrainLabelsPath)
-    # print("len:", len(train_image_labels))
-    # print(train_image_labels[0], "\n", train_image_labels[-1])
+    train_images = parse_image_from_minist_data_set(MinistTrainImagesPath)
+    print("len:", len(train_images))
+    print(train_images[0], "\n", train_images[-1])
+
+    train_image_labels = parse_label_from_minist_data_set(MinistTrainLabelsPath)
+    print("len:", len(train_image_labels))
+    print(train_image_labels[0], "\n", train_image_labels[-1])
 
     test_images = parse_image_from_minist_data_set(MinistTestImagesPath)
     print("len:", len(test_images))
@@ -1437,13 +1484,33 @@ def debug_fully_connect_net_do_minist_hande_writing_reco():
     # build net
     input_layer = LayerHolder(width=28, height=28, channel=1, layer_type=LayerType.InputLayer)
 
-    conv_kernel_a = Kernel(width=3, height=3, channel=1)
-    conv_layer_holder_a = ConvolutionLayerHolder(width=26, height=26, channel=1, stride=1, kernel=conv_kernel_a, bias_list=[0])
+    conv_kernel_a_1 = Kernel(width=3, height=3, channel=1)
+    conv_kernel_a_2 = Kernel(width=3, height=3, channel=1)
+    conv_kernel_a_3 = Kernel(width=3, height=3, channel=1)
+    conv_kernel_a_list = [conv_kernel_a_1, conv_kernel_a_2, conv_kernel_a_3]
+    conv_layer_holder_a = ConvolutionLayerHolder(width=26, height=26, channel=3, stride=1, kernel_list=conv_kernel_a_list, bias_list=[0])
 
     rectified_layer_holder_sig_a = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
 
-    maxpooling_kernel_a = Kernel(width=2, height=2, channel=1)
-    maxpooling_layer_holder_a = PoolingLayerHolder(width=13, height=13, channel=1, stride=2, kernel=maxpooling_kernel_a)
+    rectified_layer_holder_relu_a = RectifiedLayerHolder(layer_type=LayerType.ReLU)
+
+    maxpooling_kernel_a_1 = Kernel(width=2, height=2, channel=3)
+    maxpooling_kernel_a_list = [maxpooling_kernel_a_1]
+    maxpooling_layer_holder_a = PoolingLayerHolder(width=13, height=13, channel=3, stride=2, kernel_list=maxpooling_kernel_a_list)
+
+    conv_kernel_b_1 = Kernel(width=2, height=2, channel=3)
+    conv_kernel_b_2 = Kernel(width=2, height=2, channel=3)
+    conv_kernel_b_3 = Kernel(width=2, height=2, channel=3)
+    conv_kernel_b_list = [conv_kernel_b_1, conv_kernel_b_2, conv_kernel_b_3]
+    conv_layer_holder_b = ConvolutionLayerHolder(width=12, height=12, channel=3, stride=1, kernel_list=conv_kernel_b_list, bias_list=[0])
+
+    rectified_layer_holder_sig_b = RectifiedLayerHolder(layer_type=LayerType.Sigmoid)
+
+    rectified_layer_holder_relu_b = RectifiedLayerHolder(layer_type=LayerType.ReLU)
+
+    maxpooling_kernel_b_1 = Kernel(width=2, height=2, channel=3)
+    maxpooling_kernel_b_list = [maxpooling_kernel_b_1]
+    maxpooling_layer_holder_b = PoolingLayerHolder(width=6, height=6, channel=3, stride=2, kernel_list=maxpooling_kernel_b_list)
 
     # conv_kernel_b = Kernel(width=2, height=2, channel=1)
     # conv_layer_holder_b = ConvolutionLayerHolder(width=12, height=12, channel=1, stride=1, kernel=conv_kernel_b, bias_list=[0])
@@ -1457,34 +1524,43 @@ def debug_fully_connect_net_do_minist_hande_writing_reco():
     fully_connnected_layer_c = FullyConnectedLayerHolder(node_count=10, bias_list=[0.0])
     soft_max_layer = SoftMaxLayerHolder()
 
-    weights1 = get_gauss_distributed_list2(0, 0.5, 13 * 13 * 16)
+    weights1 = get_gauss_distributed_list2(0, 0.5, 3 * 6 * 6 * 16)
     weights2 = get_gauss_distributed_list2(0, 0.5, 16 * 16)
     weights3 = get_gauss_distributed_list2(0, 0.8, 16 * 10)
+    # weights1 = get_gauss_distributed_list3(0.007, 3 * 6 * 6 * 16)
+    # weights2 = get_gauss_distributed_list3(0.007, 16 * 16)
+    # weights3 = get_gauss_distributed_list3(0.007, 16 * 10)
     fully_connnected_layer_a.setInitWeights(weights1)
     fully_connnected_layer_b.setInitWeights(weights2)
     fully_connnected_layer_c.setInitWeights(weights3)
 
     minist_reco_net = Net("MinistRecoNet", learning_rate=0.01, loss_type=LossType.CrossEntropyLoss)
     minist_reco_net.add_layer_holder(input_layer)
+
     minist_reco_net.add_layer_holder(conv_layer_holder_a)
-    minist_reco_net.add_layer_holder(rectified_layer_holder_sig_a)
+    minist_reco_net.add_layer_holder(rectified_layer_holder_relu_a)
     minist_reco_net.add_layer_holder(maxpooling_layer_holder_a)
-    # minist_reco_net.add_layer_holder(conv_layer_holder_b)
-    # minist_reco_net.add_layer_holder(rectified_layer_holder_sig_b)
+
+    minist_reco_net.add_layer_holder(conv_layer_holder_b)
+    minist_reco_net.add_layer_holder(rectified_layer_holder_relu_b)
+    minist_reco_net.add_layer_holder(maxpooling_layer_holder_b)
+
     minist_reco_net.add_layer_holder(fully_connnected_layer_a)
     minist_reco_net.add_layer_holder(rectified_layer_sig_a)
+
     minist_reco_net.add_layer_holder(fully_connnected_layer_b)
     minist_reco_net.add_layer_holder(rectified_layer_sig_b)
+
     minist_reco_net.add_layer_holder(fully_connnected_layer_c)
     minist_reco_net.add_layer_holder(soft_max_layer)
     minist_reco_net.init()
 
-    train_images = test_images
-    train_image_labels = test_image_labels
+    # train_images = test_images
+    # train_image_labels = test_image_labels
 
     # train
-    epochs = 1
-    train_count = 10000 # not more 10000 fot test set
+    epochs = 100
+    train_count = 50 # not more 10000 fot test set
     for epoch in range(epochs):
         for i in range(len(train_images)):
             train_image = train_images[i]
@@ -1495,29 +1571,35 @@ def debug_fully_connect_net_do_minist_hande_writing_reco():
             target_value_layer_holder.fillVectorData(image_label_one_hot)
             input_layer.fillVectorData(normalized_image)
             minist_reco_net.forward()
+
+            # if i == 1:
+            #     print("check point")
+
             minist_reco_net.backward(target_value_layer_holder)
             # minist_reco_net.backward_show_info()
-            print("train the %d image from epoch: %d" % (i, epoch))
+            # print("train the %d image from epoch: %d" % (i, epoch))
 
             if i == int(train_count/10):
-                print("1/10")
+                print("epoch: {0} ".format(epoch), "1/10")
 
             if i == int((train_count/10)*3):
-                print("3/10")
+                print("epoch: {0} ".format(epoch), "3/10")
 
             if i == int((train_count/10)*5):
-                print("5/10")
+                print("epoch: {0} ".format(epoch), "5/10")
 
             if i == int((train_count/10)*8):
-                print("8/10")
+                print("epoch: {0} ".format(epoch), "8/10")
 
             if i >= train_count - 1:
                 break
 
+    test_images = train_images
+    test_image_labels = train_image_labels
     # test
     right_count = 0
     wrong_count = 0
-    test_count = 10000 # not more than 10000 test set
+    test_count = 100 # not more than 10000 test set
     #all_count = test_count #len(test_images)
     for i in range(len(test_images)):
         if i >= test_count - 1:
@@ -1538,12 +1620,12 @@ def debug_fully_connect_net_do_minist_hande_writing_reco():
         predict_index = predict_res.index(max(predict_res))
         label_index = test_image_label_one_hot.index(max(test_image_label_one_hot))
 
-        # print("***************************************")
-        # print("Test: predict number: %d " % predict_index)
-        # print("Test: actual label number: %d " % label_index)
-        # print("***************************************")
-        #
-        # time.sleep(2)
+        print("***************************************")
+        print("Test: predict number: %d " % predict_index)
+        print("Test: actual label number: %d " % label_index)
+        print("***************************************")
+
+        time.sleep(1)
 
         if predict_index == label_index:
             right_count = right_count + 1
